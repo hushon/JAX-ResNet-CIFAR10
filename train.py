@@ -23,11 +23,11 @@ os.environ['JAX_PLATFORM_NAME'] = 'gpu'
 # os.environ['XLA_PYTHON_CLIENT_ALLOCATOR'] = 'platform'
 
 KEY = jax.random.PRNGKey(1)
-BATCH_SIZE = 1024
+BATCH_SIZE = 128
 DATA_ROOT = '/workspace/data/'
 LOG_ROOT = '/workspace/runs/'
 MAX_EPOCH = 200
-INIT_LR = 8e-1
+INIT_LR = 1e-1
 MNIST_MEAN = (0.1307,)
 MNIST_STD = (0.3081,)
 CIFAR10_MEAN = (0.4914, 0.4822, 0.4465)
@@ -236,25 +236,25 @@ def main():
     )
 
     # learning_rate_fn = cosine_schedule(INIT_LR, len(train_loader) * MAX_EPOCH)
-    learning_rate_fn = optax.cosine_onecycle_schedule(
-        transition_steps=len(train_loader) * MAX_EPOCH,
-        peak_value=INIT_LR,
-        pct_start=0.3,
-        div_factor=25.0,
-        final_div_factor=1e4
-    )
+    # learning_rate_fn = optax.cosine_onecycle_schedule(
+    #     transition_steps=len(train_loader) * MAX_EPOCH,
+    #     peak_value=INIT_LR,
+    #     pct_start=0.3,
+    #     div_factor=25.0,
+    #     final_div_factor=1e4
+    # )
     # learning_rate_fn = optax.cosine_decay_schedule(
     #     init_value=INIT_LR,
     #     decay_steps=len(train_loader) * MAX_EPOCH,
     #     alpha=0.0
     #     )
-    # learning_rate_fn = optax.piecewise_constant_schedule(
-    #     init_value=INIT_LR,
-    #     boundaries_and_scales={
-    #         len(train_loader) * 100: 0.1,
-    #         len(train_loader) * 150: 0.1,
-    #     }
-    # )
+    learning_rate_fn = optax.piecewise_constant_schedule(
+        init_value=INIT_LR,
+        boundaries_and_scales={
+            len(train_loader) * 100: 0.1,
+            len(train_loader) * 150: 0.1,
+        }
+    )
     optimizer = optax.sgd(learning_rate_fn, momentum=0.9, nesterov=False)
     opt_state = optimizer.init(params)
     train_state = TrainState(params, state, opt_state)
