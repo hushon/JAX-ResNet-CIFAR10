@@ -14,7 +14,6 @@ import haiku as hk
 import optax
 
 from typing import Any, Iterable, Mapping, NamedTuple, Tuple
-import math
 import atexit
 import resnet_cifar
 import tree
