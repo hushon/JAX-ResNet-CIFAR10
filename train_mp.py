@@ -12,6 +12,7 @@ import PIL.Image
 
 import haiku as hk
 import optax
+import jmp
 
 from typing import Any, Iterable, Mapping, NamedTuple, Tuple
 import atexit
@@ -36,6 +37,7 @@ class FLAGS(NamedTuple):
     CIFAR100_STD = (0.2675, 0.2565, 0.2761)
     IMAGENET_MEAN = (0.485, 0.456, 0.406)
     IMAGENET_STD = (0.229, 0.224, 0.225)
+    NET = resnet_cifar.ResNet32
 
 
 shutil.copytree('./', FLAGS.LOG_ROOT, dirs_exist_ok=True)
@@ -49,6 +51,7 @@ class TrainState(NamedTuple):
     params: hk.Params
     state: hk.State
     opt_state: optax.OptState
+    loss_scale: jmp.LossScale
 
 
 class MultiEpochsDataLoader(torch.utils.data.DataLoader):
@@ -142,7 +145,7 @@ def l2_loss(params):
 
 
 def forward(images, is_training: bool):
-    net = resnet_cifar.ResNet32(num_classes=10, bn_config={'decay_rate': 0.9})
+    net = FLAGS.NET(num_classes=10, bn_config={'decay_rate': 0.9})
     return net(images, is_training=is_training)
 
 
@@ -186,6 +189,17 @@ def main():
         collate_fn=numpy_collate,
     )
 
+    ## INITIALIZE MIXED PRECISION ##
+    mp_policy = jmp.Policy(param_dtype = jnp.float32,
+                            compute_dtype = jnp.float16,
+                            output_dtype = jnp.float32)
+    mp_bn_policy = jmp.Policy(param_dtype = jnp.float32,
+                            compute_dtype = jnp.float32,
+                            output_dtype = jnp.float16)
+    loss_scale = jmp.DynamicLossScale(2.0**15)
+    hk.mixed_precision.set_policy(FLAGS.NET, mp_policy)
+    hk.mixed_precision.set_policy(hk.BatchNorm, mp_bn_policy)
+
 
     ## INITIALIZE MODEL ##
     model = hk.transform_with_state(forward)
@@ -198,18 +212,18 @@ def main():
     )
 
     ## INITIALIZE OPTIMIZER ##
-    # learning_rate_fn = optax.cosine_onecycle_schedule(
-    #     transition_steps=len(train_loader) * FLAGS.MAX_EPOCH,
-    #     peak_value=FLAGS.INIT_LR,
-    #     pct_start=0.3,
-    #     div_factor=25.0,
-    #     final_div_factor=1e4
-    # )
-    learning_rate_fn = optax.cosine_decay_schedule(
-        init_value=FLAGS.INIT_LR,
-        decay_steps=len(train_loader) * FLAGS.MAX_EPOCH,
-        alpha=0.0
-        )
+    learning_rate_fn = optax.cosine_onecycle_schedule(
+        transition_steps=len(train_loader) * FLAGS.MAX_EPOCH,
+        peak_value=FLAGS.INIT_LR,
+        pct_start=0.3,
+        div_factor=25.0,
+        final_div_factor=1e4
+    )
+    # learning_rate_fn = optax.cosine_decay_schedule(
+    #     init_value=FLAGS.INIT_LR,
+    #     decay_steps=len(train_loader) * FLAGS.MAX_EPOCH,
+    #     alpha=0.0
+    #     )
     # learning_rate_fn = optax.piecewise_constant_schedule(
     #     init_value=FLAGS.INIT_LR,
     #     boundaries_and_scales={
@@ -221,29 +235,36 @@ def main():
     opt_state = optimizer.init(params)
 
     ## INITIALIZE TRAIN STATE ##
-    train_state = TrainState(params, state, opt_state)
+    train_state = TrainState(params, state, opt_state, loss_scale)
 
 
     @jax.jit
     def train_step(train_state: TrainState, batch: dict):
-        params, state, opt_state = train_state
+        params, state, opt_state, loss_scale = train_state
         input, target = batch['image'], batch['label']
         def loss_fn(p):
             logits, state_new = model.apply(
                 p, state, FLAGS.KEY, input, is_training=True)
             ce_loss = softmax_cross_entropy(logits, target).mean()
             loss = ce_loss + 1e-4 * l2_loss(p)
-            return loss, state_new
-        (val, state), grads = jax.value_and_grad(loss_fn, has_aux=True)(params)
+            return loss_scale.scale(loss), (loss, state_new)
+        grads, (val, state) = jax.grad(loss_fn, has_aux=True)(params)
+        grads = loss_scale.unscale(grads)
         deltas, opt_state = optimizer.update(grads, opt_state)
         params = optax.apply_updates(params, deltas)
-        train_state = TrainState(params, state, opt_state)
+        grads_finite = jmp.all_finite(grads)
+        loss_scale = loss_scale.adjust(grads_finite)
+        params, state, opt_state = jmp.select_tree(
+            grads_finite,
+            (params, state, opt_state),
+            train_state[:-1])
+        train_state = TrainState(params, state, opt_state, loss_scale)
         return train_state, val
 
 
     @jax.jit
     def eval_step(train_state: TrainState, batch: dict):
-        params, state, _ = train_state
+        params, state, _, _ = train_state
         input, target = batch['image'], batch['label']
         logits, _ = model.apply(params, state, FLAGS.KEY, input, is_training=False)
         correct = jnp.argmax(logits, -1) == target
@@ -272,6 +293,7 @@ def main():
             'params': train_state.params,
             'state' : train_state.state,
             'opt_state': train_state.opt_state,
+            'loss_scale': train_state.loss_scale,
         }
         pickle_path = os.path.join(FLAGS.LOG_ROOT, 'model.pickle')
         torch.save(state_dict, pickle_path)
