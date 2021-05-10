@@ -6,7 +6,7 @@ import jax.numpy as jnp
 
 import torch
 from torchvision import datasets, transforms
-import tqdm
+from tqdm import trange, tqdm
 import os
 import PIL.Image
 
@@ -45,6 +45,10 @@ os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
 os.environ['JAX_PLATFORM_NAME'] = 'gpu'
 # os.environ['XLA_PYTHON_CLIENT_ALLOCATOR'] = 'platform'
 # os.environ['NVIDIA_TF32_OVERRIDE'] = '1'
+
+
+def tprint(obj):
+    tqdm.write(obj.__str__())
 
 
 class TrainState(NamedTuple):
@@ -207,7 +211,7 @@ def main():
 
     sample_input = jnp.ones((1, 32, 32, 3))
     params, state = model.init(FLAGS.KEY, sample_input, is_training=True)
-    print(
+    tprint(
         sum([p.size for p in jax.tree_util.tree_leaves(params)])
     )
 
@@ -297,12 +301,12 @@ def main():
         }
         pickle_path = os.path.join(FLAGS.LOG_ROOT, 'model.pickle')
         torch.save(state_dict, pickle_path)
-        print(f'[SAVE] {pickle_path}')
+        tprint(f'[SAVE] {pickle_path}')
 
 
     atexit.register(save_pickle)
 
-    for epoch in tqdm.trange(FLAGS.MAX_EPOCH, bar_format='{l_bar}{bar:10}{r_bar}{bar:-10b}', smoothing=1.):
+    for epoch in trange(FLAGS.MAX_EPOCH, bar_format='{l_bar}{bar:10}{r_bar}{bar:-10b}', smoothing=1.):
         for input, target in train_loader:
             batch = {
                 'image': input,
@@ -311,7 +315,7 @@ def main():
             train_state, train_loss = train_step(train_state, batch)
         acc, loss = evaluate(test_loader)
         last_lr = learning_rate_fn(train_state.opt_state[-1].count.item())
-        print(f'[{epoch}/{FLAGS.MAX_EPOCH}] LR: {last_lr:.3f} | Train Loss {train_loss:.3f} | Test Loss {loss:.3f} Acc: {acc:.3f}')
+        tprint(f'[{epoch}/{FLAGS.MAX_EPOCH}] LR: {last_lr:.3f} | Train Loss {train_loss:.3f} | Test Loss {loss:.3f} Acc: {acc:.3f}')
 
         if epoch % 20 == 0:
             save_pickle()
