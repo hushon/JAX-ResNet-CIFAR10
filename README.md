@@ -7,6 +7,7 @@ I used PyTorch and Torchvision for data loading pipeline.
 My ResNet implementation is based on [this repo](https://github.com/akamaster/pytorch_resnet_cifar10).
 
 Update: Added support for mixed precision training using [JMP](https://github.com/deepmind/jmp).
+Update: Added support for multi-GPU training: `train_multigpu.py`
 
 ## Setup
 
